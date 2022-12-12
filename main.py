@@ -23,6 +23,8 @@ from losses import DistillationLoss
 from samplers import RASampler
 from augment import new_data_aug_generator
 
+import wandb
+
 import models
 import models_v2
 
@@ -35,6 +37,13 @@ def get_args_parser():
     parser.add_argument('--epochs', default=300, type=int)
     parser.add_argument('--bce-loss', action='store_true')
     parser.add_argument('--unscale-lr', action='store_true')
+
+    # WandB parameters
+    parser.add_argument('--project', type=str, default = '', help='Project Name')
+    parser.add_argument('--exp-name',type=str, default='', help='Experiment Name')
+    parser.add_argument('--notes', type=str, default='', help='Quick message for this experiment')
+    parser.add_argument('--tags', type=str, default='', help='Tag for this run')
+    parser.add_argument('--wandb-file', type=str, default='', help='Saved wandb file')
 
     # Model parameters
     parser.add_argument('--model', default='deit_base_patch16_224', type=str, metavar='MODEL',
@@ -153,7 +162,7 @@ def get_args_parser():
     # Dataset parameters
     parser.add_argument('--data-path', default='/datasets01/imagenet_full_size/061417/', type=str,
                         help='dataset path')
-    parser.add_argument('--data-set', default='IMNET', choices=['CIFAR', 'IMNET', 'INAT', 'INAT19'],
+    parser.add_argument('--data-set', default='IMNET', choices=['CIFAR', 'IMNET', 'INAT', 'INAT19', 'PN300k'],
                         type=str, help='Image Net dataset path')
     parser.add_argument('--inat-category', default='name',
                         choices=['kingdom', 'phylum', 'class', 'order', 'supercategory', 'family', 'genus', 'name'],
@@ -184,6 +193,7 @@ def get_args_parser():
     return parser
 
 
+
 def main(args):
     utils.init_distributed_mode(args)
 
@@ -193,6 +203,20 @@ def main(args):
         raise NotImplementedError("Finetuning with distillation not yet supported")
 
     device = torch.device(args.device)
+
+    # # set up W&B
+    # if args.project:
+    #     if Path(args.wandb_file).exists():
+    #         resume_id= Path(args.wandb_file).read_text()
+    #         wandb.init(project=args.project, name = args.exp_name, notes = args.notes, tags=args.tags, id =resume_id, resume='allow', group= 'group_'+args.exp_name, dir=args.output_dir)
+    #         wandb.config.update(args, allow_val_change=True)
+    #     else:
+    #         wandb.init(project=args.project, name = args.exp_name, notes = args.notes, tags=args.tags, group= 'group_'+args.exp_name, dir=args.output_dir)
+    #         wandb.config.update(args)
+    #         Path(args.wandb_file).write_text(str(wandb.run.id))
+    #     # wandb.init(project=args.project, name = args.exp_name, notes = args.notes, tags=args.tags, resume=True, group= 'group_'+args.exp_name, dir=args.output_dir)
+    #     # wandb.config.update(args)
+
 
     # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
@@ -460,6 +484,13 @@ def main(args):
             
         print(f'Max accuracy: {max_accuracy:.2f}%')
 
+        if args.project:
+            if args.rank ==0:
+                wandb.log({**{f'train_{k}': v for k, v in train_stats.items()},
+                            **{f'test_{k}': v for k, v in test_stats.items()},
+                            'epoch': epoch,
+                            'n_parameters': n_parameters})
+
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      **{f'test_{k}': v for k, v in test_stats.items()},
                      'epoch': epoch,
@@ -475,7 +506,9 @@ def main(args):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
-
+    if args.project:
+        if args.rank == 0:
+            wandb.finish()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('DeiT training and evaluation script', parents=[get_args_parser()])

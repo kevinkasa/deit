@@ -11,6 +11,7 @@ from pathlib import Path
 import main as classification
 import submitit
 
+import wandb
 
 def parse_args():
     classification_parser = classification.get_args_parser()
@@ -20,6 +21,7 @@ def parse_args():
     parser.add_argument("--timeout", default=2800, type=int, help="Duration of the job")
     parser.add_argument("--job_dir", default="", type=str, help="Job dir. Leave empty for automatic.")
 
+    # parser.add_argument('--mem', type=int)
     parser.add_argument("--partition", default="learnfair", type=str, help="Partition where to submit")
     parser.add_argument("--use_volta32", action='store_true', help="Big models? Use this")
     parser.add_argument('--comment', default="", type=str,
@@ -77,6 +79,19 @@ class Trainer(object):
         self.args.rank = job_env.global_rank
         self.args.world_size = job_env.num_tasks
         print(f"Process group: {job_env.num_tasks} tasks, rank: {job_env.global_rank}")
+        print(self.args.gpu)
+            # set up W&B
+        if self.args.project:
+            if self.args.rank==0:
+                if Path(self.args.wandb_file).exists():
+                    resume_id= Path(self.args.wandb_file).read_text()
+                    wandb.init(project=self.args.project, name = self.args.exp_name, notes = self.args.notes, tags=self.args.tags, id =resume_id, resume='allow', group= 'group_'+self.args.exp_name, dir=self.args.output_dir)
+                    wandb.config.update(self.args, allow_val_change=True)
+                else:
+                    wandb.init(project=self.args.project, name = self.args.exp_name, notes = self.args.notes, tags=self.args.tags, group= 'group_'+self.args.exp_name, dir=self.args.output_dir)
+                    wandb.config.update(self.args)
+                    Path(self.args.wandb_file).write_text(str(wandb.run.id))
+
 
 
 def main():
@@ -108,6 +123,8 @@ def main():
         # Below are cluster dependent parameters
         slurm_partition=partition,
         slurm_signal_delay_s=120,
+        slurm_srun_args = {'--mem ' + str(40 *num_gpus_per_node) + 'GB'},
+        slurm_setup = ['export NCCL_DEBUG=INFO', """export MASTER_ADDR=$(hostname -s)""", """export MASTER_PORT=$(python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')"""],
         **kwargs
     )
 

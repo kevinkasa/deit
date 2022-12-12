@@ -1,5 +1,7 @@
 # Copyright (c) 2015-present, Facebook, Inc.
 # All rights reserved.
+from distutils.util import split_quoted
+from collections import Counter
 import os
 import json
 
@@ -71,6 +73,10 @@ def build_dataset(is_train, args):
         dataset = INatDataset(args.data_path, train=is_train, year=2019,
                               category=args.inat_category, transform=transform)
         nb_classes = dataset.nb_classes
+    elif args.data_set == 'PN300k':
+        root = os.path.join(args.data_path, 'train' if is_train else 'val')
+        dataset = ImageFolder(root = root, transform=transform)
+        nb_classes = 1081
 
     return dataset, nb_classes
 
@@ -107,3 +113,9 @@ def build_transform(is_train, args):
     t.append(transforms.ToTensor())
     t.append(transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD))
     return transforms.Compose(t)
+
+
+if __name__ == '__main__':
+    dataset, nb_classes = PNet_data(r'/h/kkasa/datasets/plantnet-300k/images', build_dataset=True)
+    print(dataset)
+    print(nb_classes)
