@@ -12,6 +12,7 @@ import main as classification
 import submitit
 
 import wandb
+import optuna
 
 def parse_args():
     classification_parser = classification.get_args_parser()
@@ -55,7 +56,7 @@ class Trainer(object):
         import main as classification
 
         self._setup_gpu_args()
-        classification.main(self.args)
+        classification.hparam_search(self.args)
 
     def checkpoint(self):
         import os

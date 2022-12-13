@@ -24,6 +24,7 @@ from samplers import RASampler
 from augment import new_data_aug_generator
 
 import wandb
+import optuna
 
 import models
 import models_v2
@@ -194,28 +195,15 @@ def get_args_parser():
 
 
 
-def main(args):
-    utils.init_distributed_mode(args)
-
+def objective(single_trial, args):
+    # utils.init_distributed_mode(args)
     print(args)
 
     if args.distillation_type != 'none' and args.finetune and not args.eval:
         raise NotImplementedError("Finetuning with distillation not yet supported")
 
     device = torch.device(args.device)
-
-    # # set up W&B
-    # if args.project:
-    #     if Path(args.wandb_file).exists():
-    #         resume_id= Path(args.wandb_file).read_text()
-    #         wandb.init(project=args.project, name = args.exp_name, notes = args.notes, tags=args.tags, id =resume_id, resume='allow', group= 'group_'+args.exp_name, dir=args.output_dir)
-    #         wandb.config.update(args, allow_val_change=True)
-    #     else:
-    #         wandb.init(project=args.project, name = args.exp_name, notes = args.notes, tags=args.tags, group= 'group_'+args.exp_name, dir=args.output_dir)
-    #         wandb.config.update(args)
-    #         Path(args.wandb_file).write_text(str(wandb.run.id))
-    #     # wandb.init(project=args.project, name = args.exp_name, notes = args.notes, tags=args.tags, resume=True, group= 'group_'+args.exp_name, dir=args.output_dir)
-    #     # wandb.config.update(args)
+    trial = optuna.integration.TorchDistributedTrial(single_trial, device = device)
 
 
     # fix the seed for reproducibility
@@ -372,6 +360,9 @@ def main(args):
     optimizer = create_optimizer(args, model_without_ddp)
     loss_scaler = NativeScaler()
 
+    # generate optuna optimizers
+    args.lr = trial.suggest_float('lr', 5e-4, 1e-1, log = True)
+    
     lr_scheduler, _ = create_scheduler(args, optimizer)
 
     criterion = LabelSmoothingCrossEntropy()
@@ -496,12 +487,14 @@ def main(args):
                      'epoch': epoch,
                      'n_parameters': n_parameters}
         
-        
-        
-        
+                        
         if args.output_dir and utils.is_main_process():
             with (output_dir / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
+
+        trial.report(test_stats['acc1'], epoch)
+        if trial.should_prune():
+            raise optuna.exceptions.TrialPruned()
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -509,6 +502,44 @@ def main(args):
     if args.project:
         if args.rank == 0:
             wandb.finish()
+
+    return test_stats['acc1']
+
+
+
+def hparam_search(args):
+    utils.init_distributed_mode(args)
+    rank = utils.get_rank()
+    study= None
+    n_trials = 20
+    if rank == 0:
+        study = optuna.create_study(direction = 'maximize', sampler=optuna.samplers.TPESampler(), pruner = optuna.pruners.HyperbandPruner())
+        study.optimize(lambda single_trial: objective(single_trial, args), n_trials = n_trials)
+    else:
+        for _ in range(n_trials):
+            try:
+                objective(None, args)
+            except optuna.TrialPruned:
+                pass
+        
+    if rank == 0 :
+        assert study is not None
+        pruned_trials = study.get_trials(deepcopy = False, states = [TrialState.PRUNED])
+        complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
+
+        print("Study statistics: ")
+        print("  Number of finished trials: ", len(study.trials))
+        print("  Number of pruned trials: ", len(pruned_trials))
+        print("  Number of complete trials: ", len(complete_trials))
+
+        print("Best trial:")
+        trial = study.best_trial
+
+        print("  Value: ", trial.value)
+
+        print("  Params: ")
+        for key, value in trial.params.items():
+            print("    {}: {}".format(key, value))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('DeiT training and evaluation script', parents=[get_args_parser()])
