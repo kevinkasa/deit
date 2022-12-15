@@ -25,6 +25,9 @@ from augment import new_data_aug_generator
 
 import wandb
 import optuna
+from optuna.storages import RetryFailedTrialCallback
+from optuna.trial import TrialState
+from optuna.integration.wandb import WeightsAndBiasesCallback
 
 import models
 import models_v2
@@ -40,8 +43,8 @@ def get_args_parser():
     parser.add_argument('--unscale-lr', action='store_true')
 
     # WandB parameters
-    parser.add_argument('--project', type=str, default = '', help='Project Name')
-    parser.add_argument('--exp-name',type=str, default='', help='Experiment Name')
+    parser.add_argument('--project', type=str, default='', help='Project Name')
+    parser.add_argument('--exp-name', type=str, default='', help='Experiment Name')
     parser.add_argument('--notes', type=str, default='', help='Quick message for this experiment')
     parser.add_argument('--tags', type=str, default='', help='Tag for this run')
     parser.add_argument('--wandb-file', type=str, default='', help='Saved wandb file')
@@ -115,15 +118,15 @@ def get_args_parser():
     parser.add_argument('--repeated-aug', action='store_true')
     parser.add_argument('--no-repeated-aug', action='store_false', dest='repeated_aug')
     parser.set_defaults(repeated_aug=True)
-    
+
     parser.add_argument('--train-mode', action='store_true')
     parser.add_argument('--no-train-mode', action='store_false', dest='train_mode')
     parser.set_defaults(train_mode=True)
-    
-    parser.add_argument('--ThreeAugment', action='store_true') #3augment
-    
-    parser.add_argument('--src', action='store_true') #simple random crop
-    
+
+    parser.add_argument('--ThreeAugment', action='store_true')  # 3augment
+
+    parser.add_argument('--src', action='store_true')  # simple random crop
+
     # * Random Erase params
     parser.add_argument('--reprob', type=float, default=0.25, metavar='PCT',
                         help='Random erase prob (default: 0.25)')
@@ -158,8 +161,8 @@ def get_args_parser():
 
     # * Finetuning params
     parser.add_argument('--finetune', default='', help='finetune from checkpoint')
-    parser.add_argument('--attn-only', action='store_true') 
-    
+    parser.add_argument('--attn-only', action='store_true')
+
     # Dataset parameters
     parser.add_argument('--data-path', default='/datasets01/imagenet_full_size/061417/', type=str,
                         help='dataset path')
@@ -191,8 +194,10 @@ def get_args_parser():
     parser.add_argument('--world_size', default=1, type=int,
                         help='number of distributed processes')
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
-    return parser
 
+    # hyperparameter tuning
+    parser.add_argument('--ntrials', default=10, type=int, help='Number of Optuna trials to run')
+    return parser
 
 
 def objective(single_trial, args):
@@ -203,8 +208,7 @@ def objective(single_trial, args):
         raise NotImplementedError("Finetuning with distillation not yet supported")
 
     device = torch.device(args.device)
-    trial = optuna.integration.TorchDistributedTrial(single_trial, device = device)
-
+    trial = optuna.integration.TorchDistributedTrial(single_trial, device=device)
 
     # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
@@ -220,6 +224,22 @@ def objective(single_trial, args):
     if True:  # args.distributed:
         num_tasks = utils.get_world_size()
         global_rank = utils.get_rank()
+        # # set up W&B
+        # if args.project:
+        #     if global_rank == 0:
+        #         if Path(args.wandb_file).exists():
+        #             resume_id = Path(args.wandb_file).read_text()
+        #             wandb.init(project=args.project, name=args.exp_name, notes=args.notes, tags=args.tags,
+        #                        id=resume_id, resume='allow', group='group_' + args.exp_name, dir=args.output_dir, reinit=True)
+        #             wandb.config.update(args, allow_val_change=True)
+        #             wandb.config.update(trial.params)
+        #         else:
+        #             wandb.init(project=args.project, name=args.exp_name, notes=args.notes, tags=args.tags,
+        #                        group='group_' + args.exp_name, dir=args.output_dir, reinit=True)
+        #             wandb.config.update(args)
+        #             wandb.config.update(trial.params)
+        #             Path(args.wandb_file).write_text(str(wandb.run.id))
+
         if args.repeated_aug:
             sampler_train = RASampler(
                 dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
@@ -278,7 +298,6 @@ def objective(single_trial, args):
         img_size=args.input_size
     )
 
-                    
     if args.finetune:
         if args.finetune.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
@@ -314,9 +333,9 @@ def objective(single_trial, args):
         checkpoint_model['pos_embed'] = new_pos_embed
 
         model.load_state_dict(checkpoint_model, strict=False)
-        
+
     if args.attn_only:
-        for name_p,p in model.named_parameters():
+        for name_p, p in model.named_parameters():
             if '.attn.' in name_p:
                 p.requires_grad = True
             else:
@@ -336,7 +355,7 @@ def objective(single_trial, args):
                 p.requires_grad = False
         except:
             print('no patch embed')
-            
+
     model.to(device)
 
     model_ema = None
@@ -361,8 +380,8 @@ def objective(single_trial, args):
     loss_scaler = NativeScaler()
 
     # generate optuna optimizers
-    args.lr = trial.suggest_float('lr', 5e-4, 1e-1, log = True)
-    
+    args.lr = trial.suggest_float('lr', 5e-4, 1e-1, log=True)
+
     lr_scheduler, _ = create_scheduler(args, optimizer)
 
     criterion = LabelSmoothingCrossEntropy()
@@ -374,10 +393,10 @@ def objective(single_trial, args):
         criterion = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
     else:
         criterion = torch.nn.CrossEntropyLoss()
-        
+
     if args.bce_loss:
         criterion = torch.nn.BCEWithLogitsLoss()
-        
+
     teacher_model = None
     if args.distillation_type != 'none':
         assert args.teacher_path, 'need to specify teacher-path when using distillation'
@@ -437,7 +456,7 @@ def objective(single_trial, args):
             optimizer, device, epoch, loss_scaler,
             args.clip_grad, model_ema, mixup_fn,
             set_training_mode=args.train_mode,  # keep in eval mode for deit finetuning / train mode for training and deit III finetuning
-            args = args,
+            args=args,
         )
 
         lr_scheduler.step(epoch)
@@ -453,11 +472,10 @@ def objective(single_trial, args):
                     'scaler': loss_scaler.state_dict(),
                     'args': args,
                 }, checkpoint_path)
-             
 
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        
+
         if max_accuracy < test_stats["acc1"]:
             max_accuracy = test_stats["acc1"]
             if args.output_dir:
@@ -472,28 +490,29 @@ def objective(single_trial, args):
                         'scaler': loss_scaler.state_dict(),
                         'args': args,
                     }, checkpoint_path)
-            
+
         print(f'Max accuracy: {max_accuracy:.2f}%')
 
         if args.project:
-            if args.rank ==0:
+            if args.rank == 0:
                 wandb.log({**{f'train_{k}': v for k, v in train_stats.items()},
-                            **{f'test_{k}': v for k, v in test_stats.items()},
-                            'epoch': epoch,
-                            'n_parameters': n_parameters})
+                           **{f'test_{k}': v for k, v in test_stats.items()},
+                           'epoch': epoch,
+                           'n_parameters': n_parameters})
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      **{f'test_{k}': v for k, v in test_stats.items()},
                      'epoch': epoch,
                      'n_parameters': n_parameters}
-        
-                        
+
         if args.output_dir and utils.is_main_process():
             with (output_dir / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
 
         trial.report(test_stats['acc1'], epoch)
         if trial.should_prune():
+            wandb.run.summary["state"] = "pruned"
+            wandb.finish(quiet=True)
             raise optuna.exceptions.TrialPruned()
 
     total_time = time.time() - start_time
@@ -506,25 +525,60 @@ def objective(single_trial, args):
     return test_stats['acc1']
 
 
-
 def hparam_search(args):
     utils.init_distributed_mode(args)
     rank = utils.get_rank()
-    study= None
-    n_trials = 20
+    study = None
+    n_trials = args.ntrials
+    callbacks = []
     if rank == 0:
-        study = optuna.create_study(direction = 'maximize', sampler=optuna.samplers.TPESampler(), pruner = optuna.pruners.HyperbandPruner())
-        study.optimize(lambda single_trial: objective(single_trial, args), n_trials = n_trials)
+        # set up W&B
+        if args.project:
+            if Path(args.wandb_file).exists():
+                resume_id = Path(args.wandb_file).read_text()
+                wandb_kwargs = {'project': args.project, 'name': args.exp_name, 'tags': args.tags,
+                                'id': resume_id, 'resume': 'allow', 'group': 'group_' + args.exp_name, 'dir': args.output_dir, 'reinit': True, 'config': args, 'allow_val_change': True}
+                # wandb.init(project=args.project, name=args.exp_name, notes=args.notes, tags=args.tags,
+                #            id=resume_id, resume='allow', group='group_' + args.exp_name, dir=args.output_dir, reinit=True)
+                # wandb.config.update(args, allow_val_change=True)
+            else:
+                # wandb.init(project=args.project, name=args.exp_name, notes=args.notes, tags=args.tags,
+                #    group='group_' + args.exp_name, dir=args.output_dir, reinit=True)
+                # wandb.config.update(args)
+                wandb_kwargs = {'project': args.project, 'name': args.exp_name, 'tags': args.tags,
+                                'group': 'group_' + args.exp_name, 'dir': args.output_dir, 'reinit': True, 'config': args}
+                Path(args.wandb_file).write_text(str(wandb.run.id))
+
+            wandbc = WeightsAndBiasesCallback(wandb_kwargs=wandb_kwargs)
+            callbacks.append(wandbc)
+
+        study_name = "testing-study"  # Unique identifier of the study.
+        storage_path = Path(args.output_dir) / "{}.db".format(study_name)
+
+        storage_name = optuna.storages.RDBStorage(
+            url="sqlite:///" + str(storage_path),
+            heartbeat_interval=60,
+            grace_period=120,
+            failed_trial_callback=RetryFailedTrialCallback(max_retry=3)
+        )
+        # study_name = "testing-study"  # Unique identifier of the study.
+        # storage_path = Path(args.output_dir) / "{}.db".format(study_name)
+        # storage_name = "sqlite:///"+str(storage_path)
+        study = optuna.create_study(direction='maximize', sampler=optuna.samplers.TPESampler(
+        ), pruner=optuna.pruners.HyperbandPruner(), storage=storage_name)
+
+
+        study.optimize(lambda single_trial: objective(single_trial, args), n_trials=n_trials, callbacks=callbacks)
     else:
         for _ in range(n_trials):
             try:
                 objective(None, args)
             except optuna.TrialPruned:
                 pass
-        
-    if rank == 0 :
+
+    if rank == 0:
         assert study is not None
-        pruned_trials = study.get_trials(deepcopy = False, states = [TrialState.PRUNED])
+        pruned_trials = study.get_trials(deepcopy=False, states=[TrialState.PRUNED])
         complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
 
         print("Study statistics: ")
@@ -540,6 +594,7 @@ def hparam_search(args):
         print("  Params: ")
         for key, value in trial.params.items():
             print("    {}: {}".format(key, value))
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('DeiT training and evaluation script', parents=[get_args_parser()])
