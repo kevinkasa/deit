@@ -27,6 +27,10 @@ def parse_args():
     parser.add_argument("--use_volta32", action='store_true', help="Big models? Use this")
     parser.add_argument('--comment', default="", type=str,
                         help='Comment to pass to scheduler, e.g. priority message')
+
+    parser.add_argument('--param_tune', default=False, type=bool, help='Is this run tuning hyperparameters')
+    parser.add_argument('--ntrials', default=10, type=int, help='Number of Optuna trials to run')
+
     return parser.parse_args()
 
 
@@ -53,10 +57,15 @@ class Trainer(object):
         self.args = args
 
     def __call__(self):
-        import main as classification
+        import main, hparam_tune
 
         self._setup_gpu_args()
-        classification.hparam_search(self.args)
+        # run hyperparameter tuning or regular training
+        if self.args.param_tune:
+            print('here')
+            hparam_tune.hparam_search(self.args)
+        else:
+            main.main(self.args)
 
     def checkpoint(self):
         import os
@@ -81,8 +90,8 @@ class Trainer(object):
         self.args.world_size = job_env.num_tasks
         print(f"Process group: {job_env.num_tasks} tasks, rank: {job_env.global_rank}")
         print(self.args.gpu)
-            # set up W&B
-        if self.args.project:
+         # set up W&B, if not tuning
+        if self.args.project and not self.args.param_tune:
             if self.args.rank==0:
                 if Path(self.args.wandb_file).exists():
                     resume_id= Path(self.args.wandb_file).read_text()
