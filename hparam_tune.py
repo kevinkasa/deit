@@ -197,7 +197,9 @@ def get_args_parser():
 
     # hyperparameter tuning
     parser.add_argument('--ntrials', default=10, type=int, help='Number of Optuna trials to run')
+    parser.add_argument('--tuning_params', type=json.loads)
     return parser
+
 
 def objective(single_trial, args):
     # utils.init_distributed_mode(args)
@@ -210,14 +212,16 @@ def objective(single_trial, args):
     trial = optuna.integration.TorchDistributedTrial(single_trial, device=device)
 
     args_dict = vars(args)
-    for key, value in args.hparams.items():
-        args_dict
+    for key, value in args.tuning_params.items():
+        low, high = value[0], value[1]
+        if isinstance(high, float):
+            args_dict[key] = trial.suggest_float(key, low, high, log=False)
+        elif isinstance(high, int):
+            args_dict[key] = trial.suggest_int(key, low, high, log=False)
+
+    print("Hyperparameter tuning values: " + str(args.tuning_params))
 
     # args.lr = trial.suggest_float('lr', 5e-4, 1e-1, log=True)
-
-
-
-
     # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
     torch.manual_seed(seed)
@@ -447,7 +451,8 @@ def objective(single_trial, args):
             model, criterion, data_loader_train,
             optimizer, device, epoch, loss_scaler,
             args.clip_grad, model_ema, mixup_fn,
-            set_training_mode=args.train_mode,  # keep in eval mode for deit finetuning / train mode for training and deit III finetuning
+            set_training_mode=args.train_mode,
+            # keep in eval mode for deit finetuning / train mode for training and deit III finetuning
             args=args,
         )
 
@@ -529,7 +534,8 @@ def hparam_search(args):
             if Path(args.wandb_file).exists():
                 resume_id = Path(args.wandb_file).read_text()
                 wandb_kwargs = {'project': args.project, 'name': args.exp_name, 'tags': args.tags,
-                                'id': resume_id, 'resume': 'allow', 'group': 'group_' + args.exp_name, 'dir': args.output_dir, 'reinit': True, 'config': args, 'allow_val_change': True}
+                                'id': resume_id, 'resume': 'allow', 'group': 'group_' + args.exp_name,
+                                'dir': args.output_dir, 'reinit': True, 'config': args, 'allow_val_change': True}
                 # wandb.init(project=args.project, name=args.exp_name, notes=args.notes, tags=args.tags,
                 #            id=resume_id, resume='allow', group='group_' + args.exp_name, dir=args.output_dir, reinit=True)
                 # wandb.config.update(args, allow_val_change=True)
@@ -538,7 +544,8 @@ def hparam_search(args):
                 #    group='group_' + args.exp_name, dir=args.output_dir, reinit=True)
                 # wandb.config.update(args)
                 wandb_kwargs = {'project': args.project, 'name': args.exp_name, 'tags': args.tags,
-                                'group': 'group_' + args.exp_name, 'dir': args.output_dir, 'reinit': True, 'config': args}
+                                'group': 'group_' + args.exp_name, 'dir': args.output_dir, 'reinit': True,
+                                'config': args}
                 # Path(args.wandb_file).write_text(str(wandb.run.id))
 
             wandbc = WeightsAndBiasesCallback(wandb_kwargs=wandb_kwargs)
@@ -559,7 +566,8 @@ def hparam_search(args):
         study = optuna.create_study(direction='maximize', sampler=optuna.samplers.TPESampler(
         ), pruner=optuna.pruners.HyperbandPruner(), storage=storage_name)
 
-        study.optimize(lambda single_trial: wandbc.track_in_wandb(objective(single_trial, args)), n_trials=n_trials, callbacks=callbacks)
+        study.optimize(lambda single_trial: wandbc.track_in_wandb(objective(single_trial, args)), n_trials=n_trials,
+                       callbacks=callbacks)
     else:
         for _ in range(n_trials):
             try:

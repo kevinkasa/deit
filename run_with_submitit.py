@@ -62,7 +62,6 @@ class Trainer(object):
         self._setup_gpu_args()
         # run hyperparameter tuning or regular training
         if self.args.param_tune:
-            print('here')
             hparam_tune.hparam_search(self.args)
         else:
             main.main(self.args)
