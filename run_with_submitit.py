@@ -14,6 +14,7 @@ import submitit
 import wandb
 import optuna
 
+
 def parse_args():
     classification_parser = classification.get_args_parser()
     parser = argparse.ArgumentParser("Submitit for DeiT", parents=[classification_parser])
@@ -30,7 +31,8 @@ def parse_args():
 
     parser.add_argument('--param_tune', default=False, type=bool, help='Is this run tuning hyperparameters')
     parser.add_argument('--ntrials', default=10, type=int, help='Number of Optuna trials to run')
-
+    parser.add_argument('--tuning_params', type=json.loads)
+    
     return parser.parse_args()
 
 
@@ -89,18 +91,20 @@ class Trainer(object):
         self.args.world_size = job_env.num_tasks
         print(f"Process group: {job_env.num_tasks} tasks, rank: {job_env.global_rank}")
         print(self.args.gpu)
-         # set up W&B, if not tuning
+        # set up W&B, if not tuning
         if self.args.project and not self.args.param_tune:
-            if self.args.rank==0:
+            if self.args.rank == 0:
                 if Path(self.args.wandb_file).exists():
-                    resume_id= Path(self.args.wandb_file).read_text()
-                    wandb.init(project=self.args.project, name = self.args.exp_name, notes = self.args.notes, tags=self.args.tags, id =resume_id, resume='allow', group= 'group_'+self.args.exp_name, dir=self.args.output_dir)
+                    resume_id = Path(self.args.wandb_file).read_text()
+                    wandb.init(project=self.args.project, name=self.args.exp_name, notes=self.args.notes,
+                               tags=self.args.tags, id=resume_id, resume='allow', group='group_' + self.args.exp_name,
+                               dir=self.args.output_dir)
                     wandb.config.update(self.args, allow_val_change=True)
                 else:
-                    wandb.init(project=self.args.project, name = self.args.exp_name, notes = self.args.notes, tags=self.args.tags, group= 'group_'+self.args.exp_name, dir=self.args.output_dir)
+                    wandb.init(project=self.args.project, name=self.args.exp_name, notes=self.args.notes,
+                               tags=self.args.tags, group='group_' + self.args.exp_name, dir=self.args.output_dir)
                     wandb.config.update(self.args)
                     Path(self.args.wandb_file).write_text(str(wandb.run.id))
-
 
 
 def main():
@@ -132,8 +136,9 @@ def main():
         # Below are cluster dependent parameters
         slurm_partition=partition,
         slurm_signal_delay_s=120,
-        slurm_srun_args = {'--mem ' + str(40 *num_gpus_per_node) + 'GB'},
-        slurm_setup = ['export NCCL_DEBUG=INFO', """export MASTER_ADDR=$(hostname -s)""", """export MASTER_PORT=$(python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')"""],
+        slurm_srun_args={'--mem ' + str(40 * num_gpus_per_node) + 'GB'},
+        slurm_setup=['export NCCL_DEBUG=INFO', """export MASTER_ADDR=$(hostname -s)""",
+                     """export MASTER_PORT=$(python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')"""],
         **kwargs
     )
 
