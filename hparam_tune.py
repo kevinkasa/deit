@@ -566,8 +566,14 @@ def hparam_search(args):
         study = optuna.create_study(direction='maximize', sampler=optuna.samplers.TPESampler(
         ), pruner=optuna.pruners.HyperbandPruner(), storage=storage_name)
 
-        study.optimize(lambda single_trial: wandbc.track_in_wandb(objective(single_trial, args)), n_trials=n_trials,
-                       callbacks=callbacks)
+        # run with WandB callback
+        if args.project:
+            study.optimize(lambda single_trial: wandbc.track_in_wandb(objective(single_trial, args)), n_trials=n_trials,
+                           callbacks=callbacks)
+        else:
+            study.optimize(lambda single_trial: objective(single_trial, args), n_trials=n_trials,
+                           callbacks=callbacks)
+
     else:
         for _ in range(n_trials):
             try:
