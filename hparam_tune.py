@@ -515,6 +515,7 @@ def objective(single_trial, args):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
+    # test_stats = evaluate(data_loader_val, model, device)
     if args.project:
         if args.rank == 0:
             wandb.finish()
@@ -548,7 +549,7 @@ def hparam_search(args):
                                 'config': args}
                 # Path(args.wandb_file).write_text(str(wandb.run.id))
 
-            wandbc = WeightsAndBiasesCallback(wandb_kwargs=wandb_kwargs)
+            wandbc = WeightsAndBiasesCallback(metric_name = 'val_accuracy', wandb_kwargs=wandb_kwargs)
             callbacks.append(wandbc)
 
         study_name = "testing-study"  # Unique identifier of the study.
@@ -568,8 +569,8 @@ def hparam_search(args):
 
         # run with WandB callback
         if args.project:
-            study.optimize(lambda single_trial: wandbc.track_in_wandb(objective(single_trial, args)), n_trials=n_trials,
-                           callbacks=callbacks)
+            study.optimize(lambda single_trial: objective(single_trial, args), n_trials=n_trials,
+                           callbacks=[wandbc])
         else:
             study.optimize(lambda single_trial: objective(single_trial, args), n_trials=n_trials,
                            callbacks=callbacks)

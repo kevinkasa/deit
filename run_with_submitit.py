@@ -6,6 +6,7 @@ A script to run multinode training with submitit.
 import argparse
 import os
 import uuid
+import json
 from pathlib import Path
 
 import main as classification
@@ -19,6 +20,7 @@ def parse_args():
     classification_parser = classification.get_args_parser()
     parser = argparse.ArgumentParser("Submitit for DeiT", parents=[classification_parser])
     parser.add_argument("--ngpus", default=8, type=int, help="Number of gpus to request on each node")
+    parser.add_argument("--ncpus", default = 10, type = int, help = "Number of cpus to request per each gpu")
     parser.add_argument("--nodes", default=2, type=int, help="Number of nodes to request")
     parser.add_argument("--timeout", default=2800, type=int, help="Duration of the job")
     parser.add_argument("--job_dir", default="", type=str, help="Job dir. Leave empty for automatic.")
@@ -128,17 +130,16 @@ def main():
 
     executor.update_parameters(
         mem_gb=40 * num_gpus_per_node,
+	    exclude='gpu179',
         gpus_per_node=num_gpus_per_node,
         tasks_per_node=num_gpus_per_node,  # one task per GPU
-        cpus_per_task=10,
+        cpus_per_task=args.ncpus,
         nodes=nodes,
         timeout_min=timeout_min,  # max is 60 * 72
         # Below are cluster dependent parameters
         slurm_partition=partition,
         slurm_signal_delay_s=120,
         slurm_srun_args={'--mem ' + str(40 * num_gpus_per_node) + 'GB'},
-        slurm_setup=['export NCCL_DEBUG=INFO', """export MASTER_ADDR=$(hostname -s)""",
-                     """export MASTER_PORT=$(python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')"""],
         **kwargs
     )
 
