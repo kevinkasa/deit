@@ -7,6 +7,7 @@ import time
 import torch
 import torch.backends.cudnn as cudnn
 import json
+import os
 
 from pathlib import Path
 
@@ -171,6 +172,7 @@ def get_args_parser():
     parser.add_argument('--inat-category', default='name',
                         choices=['kingdom', 'phylum', 'class', 'order', 'supercategory', 'family', 'genus', 'name'],
                         type=str, help='semantic granularity')
+    parser.add_argument('--test', action='store_true', default = False, help='Used for evaluating on test set')
 
     parser.add_argument('--output_dir', default='',
                         help='path where to save, empty for no saving')
@@ -209,8 +211,11 @@ def objective(single_trial, args):
         raise NotImplementedError("Finetuning with distillation not yet supported")
 
     device = torch.device(args.device)
-    trial = optuna.integration.TorchDistributedTrial(single_trial, device=device)
-
+    
+    if optuna.__version__ == '2.10.1':
+        trial = optuna.integration.TorchDistributedTrial(single_trial, device=device)
+    else:
+        trial = optuna.integration.TorchDistributedTrial(single_trial)
     args_dict = vars(args)
     for key, value in args.tuning_params.items():
         low, high = value[0], value[1]
@@ -220,6 +225,7 @@ def objective(single_trial, args):
             args_dict[key] = trial.suggest_int(key, low, high, log=False)
 
     print("Hyperparameter tuning values: " + str(args.tuning_params))
+    # trial_number = RetryFailedTrialCallback.retried_trial_number(single_trial)
 
     # args.lr = trial.suggest_float('lr', 5e-4, 1e-1, log=True)
     # fix the seed for reproducibility
@@ -229,6 +235,12 @@ def objective(single_trial, args):
     # random.seed(seed)
 
     cudnn.benchmark = True
+
+    # trial_number = RetryFailedTrialCallback.retried_trial_number(trial)
+    # if trial_number is not None:
+    #     print(f"Loading a checkpoint from trial {trial_number}.")
+    # print(trial_number)
+    # print(trial.number)
 
     dataset_train, args.nb_classes = build_dataset(is_train=True, args=args)
     dataset_val, _ = build_dataset(is_train=False, args=args)
@@ -375,9 +387,6 @@ def objective(single_trial, args):
     optimizer = create_optimizer(args, model_without_ddp)
     loss_scaler = NativeScaler()
 
-    # # generate optuna optimizers
-    # args.lr = trial.suggest_float('lr', 5e-4, 1e-1, log=True)
-
     lr_scheduler, _ = create_scheduler(args, optimizer)
 
     criterion = LabelSmoothingCrossEntropy()
@@ -419,24 +428,32 @@ def objective(single_trial, args):
     )
 
     output_dir = Path(args.output_dir)
-    if args.resume:
+    if os.path.isfile(args.resume):
         if args.resume.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.resume, map_location='cpu', check_hash=True)
         else:
+            #print('resuming trial: ' + str(trial.number))
+            #resume_path = os.path.join(args.resume, str(trial.number-1), 'checkpoint.pth')
             checkpoint = torch.load(args.resume, map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'])
-        if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
-            args.start_epoch = checkpoint['epoch'] + 1
-            if args.model_ema:
-                utils._load_checkpoint_for_ema(model_ema, checkpoint['model_ema'])
-            if 'scaler' in checkpoint:
-                loss_scaler.load_state_dict(checkpoint['scaler'])
-        lr_scheduler.step(args.start_epoch)
+        if checkpoint['epoch'] != args.epochs-1:
+            print('resuming trial: ' + str(trial.number))
+            print('resuming epoch: ' + str(checkpoint['epoch']))
+            model_without_ddp.load_state_dict(checkpoint['model'])
+ 
+            if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
+                optimizer.load_state_dict(checkpoint['optimizer'])
+                lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+                args.start_epoch = checkpoint['epoch'] + 1
+                if args.model_ema:
+                    utils._load_checkpoint_for_ema(model_ema, checkpoint['model_ema'])
+                if 'scaler' in checkpoint:
+                    loss_scaler.load_state_dict(checkpoint['scaler'])
+            lr_scheduler.step(args.start_epoch)
+        else:
+            args.start_epoch = 0 
     if args.eval:
-        test_stats = evaluate(data_loader_val, model, device)
+        test_stats = evaluate(data_loader_val, model, device, args=args)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         return
 
@@ -444,6 +461,10 @@ def objective(single_trial, args):
     start_time = time.time()
     max_accuracy = 0.0
     for epoch in range(args.start_epoch, args.epochs):
+        print('LR: ')
+        print(args.lr)
+        print(args_dict['lr'])
+
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
 
@@ -455,11 +476,12 @@ def objective(single_trial, args):
             # keep in eval mode for deit finetuning / train mode for training and deit III finetuning
             args=args,
         )
-
         lr_scheduler.step(epoch)
         if args.output_dir:
-            checkpoint_paths = [output_dir / 'checkpoint.pth']
+            checkpoint_paths = [output_dir / 'checkpoint.pth']    
             for checkpoint_path in checkpoint_paths:
+                #os.makedirs(checkpoint_path, exist_ok=True)
+                #checkpoint_path = os.path.join(checkpoint_path, 'checkpoint.pth')
                 utils.save_on_master({
                     'model': model_without_ddp.state_dict(),
                     'optimizer': optimizer.state_dict(),
@@ -470,7 +492,7 @@ def objective(single_trial, args):
                     'args': args,
                 }, checkpoint_path)
 
-        test_stats = evaluate(data_loader_val, model, device)
+        test_stats = evaluate(data_loader_val, model, device, args=args)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
 
         if max_accuracy < test_stats["acc1"]:
@@ -495,7 +517,10 @@ def objective(single_trial, args):
                 wandb.log({**{f'train_{k}': v for k, v in train_stats.items()},
                            **{f'test_{k}': v for k, v in test_stats.items()},
                            'epoch': epoch,
-                           'n_parameters': n_parameters})
+                           'n_parameters': n_parameters,
+                           'lr': args.lr,
+                           'drop-path':args.drop_path,
+                           'weight-decay': args.weight_decay},)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      **{f'test_{k}': v for k, v in test_stats.items()},
@@ -508,7 +533,7 @@ def objective(single_trial, args):
 
         trial.report(test_stats['acc1'], epoch)
         if trial.should_prune():
-            wandb.run.summary["state"] = "pruned"
+            #wandb.run.summary["state"] = "pruned"
             wandb.finish(quiet=True)
             raise optuna.exceptions.TrialPruned()
 
@@ -552,29 +577,33 @@ def hparam_search(args):
             wandbc = WeightsAndBiasesCallback(metric_name = 'val_accuracy', wandb_kwargs=wandb_kwargs)
             callbacks.append(wandbc)
 
-        study_name = "testing-study"  # Unique identifier of the study.
+        study_name = args.exp_name # Unique identifier of the study.
         storage_path = Path(args.output_dir) / "{}.db".format(study_name)
 
         storage_name = optuna.storages.RDBStorage(
             url="sqlite:///" + str(storage_path),
-            heartbeat_interval=60,
-            grace_period=120,
-            failed_trial_callback=RetryFailedTrialCallback(max_retry=3)
+            heartbeat_interval=1,
+            failed_trial_callback=RetryFailedTrialCallback(),
         )
         # study_name = "testing-study"  # Unique identifier of the study.
         # storage_path = Path(args.output_dir) / "{}.db".format(study_name)
         # storage_name = "sqlite:///"+str(storage_path)
-        study = optuna.create_study(direction='maximize', sampler=optuna.samplers.TPESampler(
-        ), pruner=optuna.pruners.HyperbandPruner(), storage=storage_name)
+        study = optuna.create_study(direction='maximize', study_name=study_name,sampler=optuna.samplers.TPESampler(
+        ), pruner=optuna.pruners.HyperbandPruner(), storage=storage_name, load_if_exists=True)
 
-        # run with WandB callback
-        if args.project:
-            study.optimize(lambda single_trial: objective(single_trial, args), n_trials=n_trials,
-                           callbacks=[wandbc])
-        else:
-            study.optimize(lambda single_trial: objective(single_trial, args), n_trials=n_trials,
-                           callbacks=callbacks)
-
+        complete_trials = len([t for t in study.trials if t.state == TrialState.COMPLETE])
+        print(f'number of trials completed thus far: {complete_trials}')
+        while complete_trials < n_trials: # make sure to complete n trials
+            # run with WandB callback
+            if args.project:
+                study.optimize(lambda single_trial: objective(single_trial, args), n_trials=n_trials,
+                            callbacks=callbacks)
+            else:
+                study.optimize(lambda single_trial: objective(single_trial, args), n_trials=n_trials,
+                            callbacks=callbacks)
+        
+            complete_trials = len([t for t in study.trials if t.state == TrialState.COMPLETE])
+        print(f'completed {complete_trials} trials')
     else:
         for _ in range(n_trials):
             try:

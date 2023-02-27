@@ -74,7 +74,16 @@ def build_dataset(is_train, args):
                               category=args.inat_category, transform=transform)
         nb_classes = dataset.nb_classes
     elif args.data_set == 'PN300k':
-        root = os.path.join(args.data_path, 'train' if is_train else 'val')
+        if is_train:
+            root = os.path.join(args.data_path, 'train')
+            print('Using train set')
+        elif args.test:
+            root = os.path.join(args.data_path , 'test')
+            print('Using test set')
+        else:
+            root = os.path.join(args.data_path, 'val')
+            print('Using val set ')
+        # root = os.path.join(args.data_path, 'train' if is_train else 'val')
         dataset = ImageFolder(root = root, transform=transform)
         nb_classes = 1081
 

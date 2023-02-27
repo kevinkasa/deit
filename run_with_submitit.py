@@ -21,6 +21,7 @@ def parse_args():
     parser = argparse.ArgumentParser("Submitit for DeiT", parents=[classification_parser])
     parser.add_argument("--ngpus", default=8, type=int, help="Number of gpus to request on each node")
     parser.add_argument("--ncpus", default = 10, type = int, help = "Number of cpus to request per each gpu")
+    parser.add_argument("--mem", default = 160, type=int, help="Amount of RAM/node")
     parser.add_argument("--nodes", default=2, type=int, help="Number of nodes to request")
     parser.add_argument("--timeout", default=2800, type=int, help="Duration of the job")
     parser.add_argument("--job_dir", default="", type=str, help="Job dir. Leave empty for automatic.")
@@ -127,9 +128,10 @@ def main():
         kwargs['slurm_constraint'] = 'volta32gb'
     if args.comment:
         kwargs['slurm_comment'] = args.comment
-
+    print('num gpus per node: ')
+    print(num_gpus_per_node)
     executor.update_parameters(
-        mem_gb=40 * num_gpus_per_node,
+        mem_gb= args.mem,
 	    exclude='gpu179',
         gpus_per_node=num_gpus_per_node,
         tasks_per_node=num_gpus_per_node,  # one task per GPU
@@ -139,7 +141,8 @@ def main():
         # Below are cluster dependent parameters
         slurm_partition=partition,
         slurm_signal_delay_s=120,
-        slurm_srun_args={'--mem ' + str(40 * num_gpus_per_node) + 'GB'},
+        slurm_setup=['export NCCL_DEBUG=INFO'],
+        #slurm_srun_args={'--mem ' + str(args.mem) + 'GB'},
         **kwargs
     )
 

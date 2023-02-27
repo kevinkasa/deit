@@ -7,6 +7,7 @@ import time
 import torch
 import torch.backends.cudnn as cudnn
 import json
+import os
 
 from pathlib import Path
 
@@ -184,6 +185,8 @@ def get_args_parser():
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
     parser.add_argument('--no-pin-mem', action='store_false', dest='pin_mem',
                         help='')
+    parser.add_argument('--test', action='store_true', default = False, help='Used for evaluating on test set')
+    parser.add_argument('--save-output', action='store_true', default = False, help='Save the outputs from the softmax layer, useful for testing')
     parser.set_defaults(pin_mem=True)
 
     # distributed training parameters
@@ -213,7 +216,8 @@ def main(args):
     cudnn.benchmark = True
 
     dataset_train, args.nb_classes = build_dataset(is_train=True, args=args)
-    dataset_val, _ = build_dataset(is_train=False, args=args)
+    dataset_val, _  = build_dataset(is_train=False, args=args)
+    
 
     if True:  # args.distributed:
         num_tasks = utils.get_world_size()
@@ -399,7 +403,7 @@ def main(args):
     )
 
     output_dir = Path(args.output_dir)
-    if args.resume:
+    if os.path.isfile(args.resume):
         if args.resume.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.resume, map_location='cpu', check_hash=True)
@@ -416,7 +420,7 @@ def main(args):
                 loss_scaler.load_state_dict(checkpoint['scaler'])
         lr_scheduler.step(args.start_epoch)
     if args.eval:
-        test_stats = evaluate(data_loader_val, model, device)
+        test_stats = evaluate(data_loader_val, model, device, args, args.save_output)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         return
 
@@ -450,7 +454,7 @@ def main(args):
                 }, checkpoint_path)
              
 
-        test_stats = evaluate(data_loader_val, model, device)
+        test_stats = evaluate(data_loader_val, model, device, args)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         
         if max_accuracy < test_stats["acc1"]:
