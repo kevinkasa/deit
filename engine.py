@@ -8,6 +8,7 @@ import sys
 from typing import Iterable, Optional
 
 import torch
+import numpy as np
 
 from timm.data import Mixup
 from timm.utils import accuracy, ModelEma
@@ -67,7 +68,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
 
 
 @torch.no_grad()
-def evaluate(data_loader, model, device):
+def evaluate(data_loader, model, device, args, save_output = False):
     criterion = torch.nn.CrossEntropyLoss()
 
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -75,6 +76,12 @@ def evaluate(data_loader, model, device):
 
     # switch to evaluation mode
     model.eval()
+
+    if save_output:
+        len_data = len(data_loader.dataset)
+        outputs = np.ones((len_data, args.nb_classes))
+        targets = np.ones((len_data, ))
+        counter = 0
 
     for images, target in metric_logger.log_every(data_loader, 10, header):
         images = images.to(device, non_blocking=True)
@@ -84,6 +91,11 @@ def evaluate(data_loader, model, device):
         with torch.cuda.amp.autocast():
             output = model(images)
             loss = criterion(output, target)
+
+            if save_output:
+                outputs[counter:counter+images.shape[0],:] = output.softmax(dim=1).cpu().numpy()
+                targets[counter:counter+target.shape[0]] = target.cpu().numpy().astype(int)
+                counter += images.shape[0]
 
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
@@ -96,4 +108,8 @@ def evaluate(data_loader, model, device):
     print('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}'
           .format(top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss))
 
+    if save_output:
+        np.savez(args.output_dir / 'outputs.npz', smx = outputs, labels = targets)
+
+    
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
