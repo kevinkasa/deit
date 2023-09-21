@@ -10,7 +10,7 @@ from torchvision.datasets.folder import ImageFolder, default_loader
 
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from timm.data import create_transform
-
+from aum import DatasetWithIndex
 
 class INatDataset(ImageFolder):
     def __init__(self, root, train=True, year=2018, transform=None, target_transform=None,
@@ -46,7 +46,7 @@ class INatDataset(ImageFolder):
         for elem in data['images']:
             cut = elem['file_name'].split('/')
             target_current = int(cut[2])
-            path_current = os.path.join(root, cut[0], cut[2], cut[3])
+            path_current = os.path.join(root, cut[0], cut[1], cut[2], cut[3])
 
             categors = data_catg[target_current]
             target_current_true = targeter[categors[category]]
@@ -85,7 +85,9 @@ def build_dataset(is_train, args):
             print('Using val set ')
         # root = os.path.join(args.data_path, 'train' if is_train else 'val')
         dataset = ImageFolder(root = root, transform=transform)
+        dataset = DatasetWithIndex(dataset)
         nb_classes = 1081
+        print(len(dataset))
 
     return dataset, nb_classes
 

@@ -180,7 +180,7 @@ class vit_models(nn.Module):
                  Patch_layer=PatchEmbed,act_layer=nn.GELU,
                  Attention_block = Attention, Mlp_block=Mlp,
                 dpr_constant=True,init_scale=1e-4,
-                mlp_ratio_clstk = 4.0):
+                mlp_ratio_clstk = 4.0, **kwargs):
         super().__init__()
         
         self.dropout_rate = drop_rate
@@ -319,7 +319,7 @@ def deit_medium_patch16_LS(pretrained=False, img_size=224, pretrained_21k = Fals
     return model 
 
 @register_model
-def deit_base_patch16_LS(pretrained=False, img_size=224, pretrained_21k = False,  **kwargs):
+def deit_base_patch16_LS(pretrained=False, img_size=224, pretrained_21k = False, pretrained_cfg=None,  **kwargs):
     model = vit_models(
         img_size = img_size, patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),block_layers=Layer_scale_init_Block, **kwargs)
@@ -476,7 +476,7 @@ def deit_base_patch16_18x2(pretrained=False, img_size=224, pretrained_21k = Fals
     
 
 @register_model
-def deit_base_patch16_36x1_LS(pretrained=False, img_size=224, pretrained_21k = False,  **kwargs):
+def deit_base_patch16_36x1_LS(pretrained=False, img_size=224, pretrained_21k = False, pretrained_cfg=None, **kwargs):
     model = vit_models(
         img_size = img_size, patch_size=16, embed_dim=768, depth=36, num_heads=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),block_layers=Layer_scale_init_Block, **kwargs)
@@ -490,4 +490,3 @@ def deit_base_patch16_36x1(pretrained=False, img_size=224, pretrained_21k = Fals
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
 
     return model
-

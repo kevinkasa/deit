@@ -25,6 +25,7 @@ from samplers import RASampler
 from augment import new_data_aug_generator
 
 import wandb
+from aum import AUMCalculator
 
 import models
 import models_v2
@@ -424,6 +425,9 @@ def main(args):
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         return
 
+    # start AUM calculator
+    if args.rank == 0:
+        args.aum_calculator = AUMCalculator(output_dir, compressed=False)
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_accuracy = 0.0
@@ -499,6 +503,7 @@ def main(args):
     if args.project:
         if args.rank == 0:
             wandb.finish()
+            args.aum_calculator.finalize()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('DeiT training and evaluation script', parents=[get_args_parser()])

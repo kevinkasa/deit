@@ -28,9 +28,11 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 10
 
-    for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
+    for batch in metric_logger.log_every(data_loader, print_freq, header):
+        samples, targets, sample_ids = batch
         samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
+        sample_ids = sample_ids.to(device, non_blocking=True)
 
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
@@ -43,6 +45,28 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             loss = criterion(samples, outputs, targets)
 
         loss_value = loss.item()
+        ### AUM ###
+        # Use torch.distributed.all_gather to collect tensors from all devices
+        all_outputs_gathered = [torch.empty_like(outputs) for _ in range(torch.distributed.get_world_size())]
+        all_targets_gathered = [torch.empty_like(targets) for _ in range(torch.distributed.get_world_size())]
+        all_sample_ids_gathered = [torch.empty_like(sample_ids) for _ in range(torch.distributed.get_world_size())] # [tensor(batch_size), nGPUs] 
+        torch.distributed.barrier()
+
+        torch.distributed.all_gather(all_outputs_gathered, outputs)
+        torch.distributed.all_gather(all_targets_gathered, targets)
+        torch.distributed.all_gather(all_sample_ids_gathered, sample_ids)
+        torch.distributed.barrier()
+
+        # Concatenate the gathered tensors from all devices into one tensor
+        all_outputs_gathered = torch.cat(all_outputs_gathered, dim=0)
+        all_targets_gathered = torch.cat(all_targets_gathered, dim=0)
+        all_sample_ids_gathered = torch.cat(all_sample_ids_gathered, dim=0)
+        all_sample_ids_gathered = all_sample_ids_gathered.tolist()
+
+        if args.rank == 0:
+            records = args.aum_calculator.update(all_outputs_gathered, all_targets_gathered, all_sample_ids_gathered)        
+
+        ### /AUM ###
 
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value))
@@ -61,7 +85,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
 
         metric_logger.update(loss=loss_value)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
-    # gather the stats from all processes
+
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
@@ -76,6 +100,10 @@ def evaluate(data_loader, model, device, args, save_output = False):
 
     # switch to evaluation mode
     model.eval()
+    #for param in model.parameters():
+    #        print(param.requires_grad)
+    #        param.requires_grad = False
+
 
     if save_output:
         len_data = len(data_loader.dataset)
@@ -83,19 +111,29 @@ def evaluate(data_loader, model, device, args, save_output = False):
         targets = np.ones((len_data, ))
         counter = 0
 
-    for images, target in metric_logger.log_every(data_loader, 10, header):
+        logits_list = []
+        labels_list = []
+        # ece_criterion = utils.ECELoss().cuda()
+
+    for batch in metric_logger.log_every(data_loader, 10, header):
+        images, target, sample_ids = batch
         images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
+        sample_ids = sample_ids.to(device, non_blocking=True)
 
         # compute output
         with torch.cuda.amp.autocast():
             output = model(images)
             loss = criterion(output, target)
 
-            if save_output:
-                outputs[counter:counter+images.shape[0],:] = output.softmax(dim=1).cpu().numpy()
-                targets[counter:counter+target.shape[0]] = target.cpu().numpy().astype(int)
-                counter += images.shape[0]
+        if save_output:
+            outputs[counter:counter+images.shape[0],:] = output.softmax(dim=1).cpu().numpy()
+            targets[counter:counter+target.shape[0]] = target.cpu().numpy().astype(int)
+            counter += images.shape[0]
+
+            logits_list.append(output.softmax(dim=1).cpu().numpy())
+            labels_list.append(target.cpu().numpy().astype(int))
+
 
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
@@ -110,6 +148,14 @@ def evaluate(data_loader, model, device, args, save_output = False):
 
     if save_output:
         np.savez(args.output_dir / 'outputs.npz', smx = outputs, labels = targets)
+        # np.save(args.output_dir / 'outputs.npy', outputs)
+        # np.save(args.output_dir / 'targets.npy', targets)
+        #logits = np.concatenate(logits_list, axis=0)
+        #labels = np.concatenate(labels_list, axis=0)
+        # ece = ece_criterion(logits, labels).item()
+        # print('Before temperature ECE: %.3f' % (ece))
+        #np.save(args.output_dir / 'logits.npy', logits, )
+        #np.save(args.output_dir / 'labels.npy', labels)
 
     
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
